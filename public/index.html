@@ -1,10 +1,10 @@
 <!DOCTYPE html>
 <html>
 <head>
-  <meta charset="UTF-8">
+  <meta charset="UTF-8" />
   <title>Random Video Chat</title>
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <link href="https://fonts.googleapis.com/css2?family=Press+Start+2P&family=VT323&display=swap" rel="stylesheet">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <link href="https://fonts.googleapis.com/css2?family=Press+Start+2P&family=VT323&display=swap" rel="stylesheet" />
   <style>
     * {
       box-sizing: border-box;
@@ -51,7 +51,7 @@
     video {
       width: 90vw;
       max-width: 640px;
-      height: 42vh; /* Total 84vh = both videos */
+      height: 42vh; /* total 84vh for both */
       background: #222;
       border: 3px solid #444;
       border-radius: 10px;
@@ -79,6 +79,13 @@
       box-shadow: none;
       transform: translateY(2px);
     }
+
+    button:disabled {
+      background: #ccc;
+      color: #888;
+      box-shadow: none;
+      cursor: not-allowed;
+    }
   </style>
 </head>
 <body>
@@ -89,74 +96,114 @@
     <video id="remoteVideo" autoplay playsinline></video>
   </div>
 
-  <button id="disconnectBtn">Disconnect</button>
+  <button id="connectBtn">Connect</button>
+  <button id="disconnectBtn" disabled>Disconnect</button>
 
   <script src="/socket.io/socket.io.js"></script>
   <script>
     const socket = io();
-    const localVideo = document.getElementById('localVideo');
-    const remoteVideo = document.getElementById('remoteVideo');
-    const disconnectBtn = document.getElementById('disconnectBtn');
+    const localVideo = document.getElementById("localVideo");
+    const remoteVideo = document.getElementById("remoteVideo");
+    const connectBtn = document.getElementById("connectBtn");
+    const disconnectBtn = document.getElementById("disconnectBtn");
 
     let localStream;
     let peerConnection;
     const config = {
-      iceServers: [{ urls: 'stun:stun.l.google.com:19302' }]
+      iceServers: [{ urls: "stun:stun.l.google.com:19302" }]
     };
 
+    // Get camera and mic first
     navigator.mediaDevices.getUserMedia({ video: true, audio: true })
-      .then(stream => {
+      .then((stream) => {
         localVideo.srcObject = stream;
         localStream = stream;
-        socket.on('matched', ({ peerId }) => startCall(peerId));
-        socket.on('signal', async ({ peerId, data }) => {
-          if (data.type === 'offer') {
-            await createPeerConnection(peerId);
-            await peerConnection.setRemoteDescription(new RTCSessionDescription(data));
-            const answer = await peerConnection.createAnswer();
-            await peerConnection.setLocalDescription(answer);
-            socket.emit('signal', { peerId, data: answer });
-          } else if (data.type === 'answer') {
-            await peerConnection.setRemoteDescription(new RTCSessionDescription(data));
-          } else if (data.candidate) {
-            await peerConnection.addIceCandidate(new RTCIceCandidate(data));
-          }
-        });
-
-        socket.on('peer-disconnected', id => {
-          if (peerConnection) {
-            peerConnection.close();
-            peerConnection = null;
-            remoteVideo.srcObject = null;
-          }
-        });
+        connectBtn.disabled = false;
+      })
+      .catch((err) => {
+        alert("Could not get media: " + err);
       });
+
+    connectBtn.onclick = () => {
+      socket.emit("find-peer");
+      connectBtn.disabled = true;
+      disconnectBtn.disabled = false;
+    };
+
+    disconnectBtn.onclick = () => {
+      if (peerConnection) peerConnection.close();
+      peerConnection = null;
+      remoteVideo.srcObject = null;
+      socket.emit("disconnect-peer");  // optional
+      connectBtn.disabled = false;
+      disconnectBtn.disabled = true;
+    };
+
+    socket.on("matched", ({ peerId }) => {
+      startCall(peerId);
+    });
+
+    socket.on("signal", async ({ peerId, data }) => {
+      if (!peerConnection) await createPeerConnection(peerId);
+
+      if (data.type === "offer") {
+        await peerConnection.setRemoteDescription(new RTCSessionDescription(data));
+        const answer = await peerConnection.createAnswer();
+        await peerConnection.setLocalDescription(answer);
+        socket.emit("signal", { peerId, data: answer });
+      } else if (data.type === "answer") {
+        await peerConnection.setRemoteDescription(new RTCSessionDescription(data));
+      } else if (data.candidate) {
+        try {
+          await peerConnection.addIceCandidate(new RTCIceCandidate(data));
+        } catch (err) {
+          console.error("Error adding ICE candidate:", err);
+        }
+      }
+    });
+
+    socket.on("peer-disconnected", () => {
+      if (peerConnection) {
+        peerConnection.close();
+        peerConnection = null;
+      }
+      remoteVideo.srcObject = null;
+      connectBtn.disabled = false;
+      disconnectBtn.disabled = true;
+    });
 
     async function startCall(peerId) {
       await createPeerConnection(peerId);
       const offer = await peerConnection.createOffer();
       await peerConnection.setLocalDescription(offer);
-      socket.emit('signal', { peerId, data: offer });
+      socket.emit("signal", { peerId, data: offer });
     }
 
     async function createPeerConnection(peerId) {
       peerConnection = new RTCPeerConnection(config);
-      localStream.getTracks().forEach(track => peerConnection.addTrack(track, localStream));
-      peerConnection.ontrack = event => {
+
+      localStream.getTracks().forEach((track) => {
+        peerConnection.addTrack(track, localStream);
+      });
+
+      peerConnection.ontrack = (event) => {
         remoteVideo.srcObject = event.streams[0];
       };
-      peerConnection.onicecandidate = event => {
+
+      peerConnection.onicecandidate = (event) => {
         if (event.candidate) {
-          socket.emit('signal', { peerId, data: event.candidate });
+          socket.emit("signal", { peerId, data: event.candidate });
+        }
+      };
+
+      peerConnection.onconnectionstatechange = () => {
+        if (peerConnection.connectionState === "disconnected" || peerConnection.connectionState === "failed" || peerConnection.connectionState === "closed") {
+          remoteVideo.srcObject = null;
+          connectBtn.disabled = false;
+          disconnectBtn.disabled = true;
         }
       };
     }
-
-    disconnectBtn.onclick = () => {
-      if (peerConnection) peerConnection.close();
-      remoteVideo.srcObject = null;
-      location.reload();
-    };
   </script>
 </body>
 </html>
