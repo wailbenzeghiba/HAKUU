@@ -1,47 +1,85 @@
+// server.js
 const express = require("express");
 const http = require("http");
-const socketIO = require("socket.io");
+const { Server } = require("socket.io");
 
 const app = express();
 const server = http.createServer(app);
-const io = socketIO(server);
+const io = new Server(server);
 
-const PORT = 3000;
-let waitingUser = null;
+const port = process.env.PORT || 3000;
+
+app.use(express.static("public")); // serve your client files from ./public
+
+let waitingSocket = null;
 
 io.on("connection", (socket) => {
-  console.log("New client connected: " + socket.id);
+  console.log("User connected:", socket.id);
 
   socket.on("find-peer", () => {
-    if (waitingUser && waitingUser.id !== socket.id) {
-      const room = socket.id + "#" + waitingUser.id;
-      socket.join(room);
-      waitingUser.join(room);
+    if (waitingSocket && waitingSocket !== socket) {
+      // Pair them
+      const peer1 = waitingSocket;
+      const peer2 = socket;
 
-      socket.emit("matched", { room, peerId: waitingUser.id });
-      waitingUser.emit("matched", { room, peerId: socket.id });
+      // Save peer info for signaling
+      peer1.peerId = peer2.id;
+      peer2.peerId = peer1.id;
 
-      waitingUser = null;
+      // Notify both clients they're matched
+      peer1.emit("matched", { peerId: peer2.id });
+      peer2.emit("matched", { peerId: peer1.id });
+
+      // Clear waiting socket
+      waitingSocket = null;
     } else {
-      waitingUser = socket;
+      // No one waiting, put this socket in queue
+      waitingSocket = socket;
     }
   });
 
   socket.on("signal", ({ peerId, data }) => {
-    io.to(peerId).emit("signal", { peerId: socket.id, data });
+    const peer = io.sockets.sockets.get(peerId);
+    if (peer) {
+      peer.emit("signal", { peerId: socket.id, data });
+    }
+  });
+
+  socket.on("disconnect-peer", () => {
+    if (socket.peerId) {
+      const peer = io.sockets.sockets.get(socket.peerId);
+      if (peer) {
+        peer.emit("peer-disconnected");
+      }
+    }
+    cleanup(socket);
   });
 
   socket.on("disconnect", () => {
-    console.log("Client disconnected: " + socket.id);
-    if (waitingUser && waitingUser.id === socket.id) {
-      waitingUser = null;
+    console.log("User disconnected:", socket.id);
+    if (socket.peerId) {
+      const peer = io.sockets.sockets.get(socket.peerId);
+      if (peer) {
+        peer.emit("peer-disconnected");
+      }
     }
-    socket.broadcast.emit("peer-disconnected", socket.id);
+    cleanup(socket);
   });
+
+  function cleanup(sock) {
+    if (waitingSocket === sock) {
+      waitingSocket = null;
+    }
+    if (sock.peerId) {
+      const peer = io.sockets.sockets.get(sock.peerId);
+      if (peer) {
+        peer.peerId = null;
+      }
+      sock.peerId = null;
+    }
+  }
 });
 
-app.use(express.static("public"));
-
-server.listen(PORT, () => {
-  console.log(`Server running on http://localhost:${PORT}`);
+server.listen(port, () => {
+  console.log(`Server listening on port ${port}`);
 });

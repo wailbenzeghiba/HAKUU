@@ -86,6 +86,49 @@
       box-shadow: none;
       cursor: not-allowed;
     }
+
+    /* Status message below buttons */
+    #status {
+      font-family: 'VT323', monospace;
+      font-size: 18px;
+      color: #3e3e3e;
+      min-height: 24px;
+      margin-bottom: 12px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 8px;
+    }
+
+    /* Simple dots animation */
+    .dots::after {
+      content: '';
+      display: inline-block;
+      width: 6px;
+      height: 6px;
+      margin-left: 5px;
+      border-radius: 50%;
+      background: #ff69b4;
+      animation: blink 1.2s infinite ease-in-out;
+    }
+    .dots::after:nth-child(1) {
+      animation-delay: 0s;
+    }
+    .dots::after:nth-child(2) {
+      animation-delay: 0.2s;
+    }
+    .dots::after:nth-child(3) {
+      animation-delay: 0.4s;
+    }
+
+    @keyframes blink {
+      0%, 80%, 100% {
+        opacity: 0;
+      }
+      40% {
+        opacity: 1;
+      }
+    }
   </style>
 </head>
 <body>
@@ -96,8 +139,10 @@
     <video id="remoteVideo" autoplay playsinline></video>
   </div>
 
-  <button id="connectBtn">Connect</button>
+  <button id="connectBtn" disabled>Connect</button>
   <button id="disconnectBtn" disabled>Disconnect</button>
+
+  <div id="status"></div>
 
   <script src="/socket.io/socket.io.js"></script>
   <script>
@@ -106,9 +151,12 @@
     const remoteVideo = document.getElementById("remoteVideo");
     const connectBtn = document.getElementById("connectBtn");
     const disconnectBtn = document.getElementById("disconnectBtn");
+    const statusDiv = document.getElementById("status");
 
     let localStream;
     let peerConnection;
+    let peerId; // current connected peer id
+
     const config = {
       iceServers: [{ urls: "stun:stun.l.google.com:19302" }]
     };
@@ -119,12 +167,15 @@
         localVideo.srcObject = stream;
         localStream = stream;
         connectBtn.disabled = false;
+        statusDiv.textContent = "";
       })
       .catch((err) => {
         alert("Could not get media: " + err);
       });
 
     connectBtn.onclick = () => {
+      statusDiv.textContent = "Connecting";
+      statusDiv.classList.add("dots");
       socket.emit("find-peer");
       connectBtn.disabled = true;
       disconnectBtn.disabled = false;
@@ -133,32 +184,49 @@
     disconnectBtn.onclick = () => {
       if (peerConnection) peerConnection.close();
       peerConnection = null;
+      peerId = null;
       remoteVideo.srcObject = null;
       socket.emit("disconnect-peer");  // optional
       connectBtn.disabled = false;
       disconnectBtn.disabled = true;
+      statusDiv.textContent = "";
+      statusDiv.classList.remove("dots");
     };
 
-    socket.on("matched", ({ peerId }) => {
-      startCall(peerId);
+    socket.on("matched", ({ peerId: id }) => {
+      peerId = id;
+      statusDiv.textContent = "Connected!";
+      statusDiv.classList.remove("dots");
+      // Only the peer with the lower id starts the call
+      if (socket.id < id) {
+        startCall(peerId);
+      }
     });
 
-    socket.on("signal", async ({ peerId, data }) => {
-      if (!peerConnection) await createPeerConnection(peerId);
-
-      if (data.type === "offer") {
-        await peerConnection.setRemoteDescription(new RTCSessionDescription(data));
-        const answer = await peerConnection.createAnswer();
-        await peerConnection.setLocalDescription(answer);
-        socket.emit("signal", { peerId, data: answer });
-      } else if (data.type === "answer") {
-        await peerConnection.setRemoteDescription(new RTCSessionDescription(data));
-      } else if (data.candidate) {
-        try {
+    socket.on("signal", async ({ peerId: id, data }) => {
+      if (!peerConnection) await createPeerConnection(id);
+      try {
+        if (data.type === "offer") {
+          await peerConnection.setRemoteDescription(new RTCSessionDescription(data));
+          const answer = await peerConnection.createAnswer();
+          await peerConnection.setLocalDescription(answer);
+          socket.emit("signal", { peerId: id, data: answer });
+        } else if (data.type === "answer") {
+          // Only set remote answer if in correct signaling state
+          if (peerConnection.signalingState === "have-local-offer") {
+            await peerConnection.setRemoteDescription(new RTCSessionDescription(data));
+          } else {
+            console.warn("Ignoring answer: invalid signaling state", peerConnection.signalingState);
+          }
+        } else if (data.candidate) {
           await peerConnection.addIceCandidate(new RTCIceCandidate(data));
-        } catch (err) {
-          console.error("Error adding ICE candidate:", err);
         }
+      } catch (err) {
+        console.error("Error handling signal:", err);
+        statusDiv.textContent = "Error occurred";
+        statusDiv.classList.remove("dots");
+        connectBtn.disabled = false;
+        disconnectBtn.disabled = true;
       }
     });
 
@@ -170,16 +238,27 @@
       remoteVideo.srcObject = null;
       connectBtn.disabled = false;
       disconnectBtn.disabled = true;
+      statusDiv.textContent = "Peer disconnected";
+      statusDiv.classList.remove("dots");
     });
 
-    async function startCall(peerId) {
-      await createPeerConnection(peerId);
+    // If no peer is found after a timeout, show error
+    // For example, 10 seconds timeout after find-peer
+    socket.on("no-peer-found", () => {
+      statusDiv.textContent = "Error occurred: No peers available";
+      statusDiv.classList.remove("dots");
+      connectBtn.disabled = false;
+      disconnectBtn.disabled = true;
+    });
+
+    async function startCall(id) {
+      await createPeerConnection(id);
       const offer = await peerConnection.createOffer();
       await peerConnection.setLocalDescription(offer);
-      socket.emit("signal", { peerId, data: offer });
+      socket.emit("signal", { peerId: id, data: offer });
     }
 
-    async function createPeerConnection(peerId) {
+    async function createPeerConnection(id) {
       peerConnection = new RTCPeerConnection(config);
 
       localStream.getTracks().forEach((track) => {
@@ -192,7 +271,7 @@
 
       peerConnection.onicecandidate = (event) => {
         if (event.candidate) {
-          socket.emit("signal", { peerId, data: event.candidate });
+          socket.emit("signal", { peerId: id, data: event.candidate });
         }
       };
 
@@ -201,6 +280,8 @@
           remoteVideo.srcObject = null;
           connectBtn.disabled = false;
           disconnectBtn.disabled = true;
+          statusDiv.textContent = "Disconnected";
+          statusDiv.classList.remove("dots");
         }
       };
     }
