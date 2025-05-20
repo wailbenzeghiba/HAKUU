@@ -153,7 +153,7 @@
     const disconnectBtn = document.getElementById("disconnectBtn");
     const statusDiv = document.getElementById("status");
 
-    let localStream;
+    let localStream = null;
     let peerConnection;
     let peerId; // current connected peer id
 
@@ -161,19 +161,16 @@
       iceServers: [{ urls: "stun:stun.l.google.com:19302" }]
     };
 
-    // Get camera and mic first
-    navigator.mediaDevices.getUserMedia({ video: true, audio: true })
-      .then((stream) => {
-        localVideo.srcObject = stream;
-        localStream = stream;
-        connectBtn.disabled = false;
-        statusDiv.textContent = "";
-      })
-      .catch((err) => {
-        alert("Could not get media: " + err);
-      });
-
-    connectBtn.onclick = () => {
+    connectBtn.onclick = async () => {
+      if (!localStream) {
+        try {
+          localStream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
+          localVideo.srcObject = localStream;
+        } catch (err) {
+          alert("Could not get media: " + err);
+          return;
+        }
+      }
       statusDiv.textContent = "Connecting";
       statusDiv.classList.add("dots");
       socket.emit("find-peer");
