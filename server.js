@@ -45,6 +45,13 @@ io.on("connection", (socket) => {
     }
   });
 
+  socket.on("chat-message", ({ peerId, msg }) => {
+    const peer = io.sockets.sockets.get(peerId);
+    if (peer) {
+      peer.emit("chat-message", { from: socket.id, msg });
+    }
+  });
+
   socket.on("disconnect-peer", () => {
     if (socket.peerId) {
       const peer = io.sockets.sockets.get(socket.peerId);

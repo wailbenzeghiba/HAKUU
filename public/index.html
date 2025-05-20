@@ -48,14 +48,58 @@
       padding: 4px 0;
     }
 
-    video {
-      width: 90vw;
-      max-width: 640px;
-      height: 42vh; /* total 84vh for both */
+    .main-row {
+      display: flex;
+      flex-direction: row;
+      justify-content: center;
+      align-items: flex-start;
+      gap: 32px;
+      width: 100%;
+      max-width: 1100px;
+    }
+
+    .video-column {
+      display: flex;
+      flex-direction: column;
+      gap: 24px;
+      align-items: center;
+    }
+
+    .video-box {
+      position: relative;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+    }
+
+    #localVideo, #remoteVideo {
+      width: 38vw;
+      max-width: 400px;
+      height: 32vh;
+      max-height: 240px;
       background: #222;
       border: 3px solid #444;
       border-radius: 10px;
       image-rendering: pixelated;
+    }
+
+    #flipBtn {
+      position: absolute;
+      bottom: 10px;
+      right: 10px;
+      font-size: 18px;
+      padding: 4px 10px;
+      background: #ff69b4;
+      color: white;
+      border: none;
+      border-radius: 6px;
+      box-shadow: 0 2px #b94b8b;
+      cursor: pointer;
+      z-index: 2;
+    }
+
+    #flipBtn:hover {
+      background: #ff85c1;
     }
 
     button {
@@ -93,7 +137,7 @@
       font-size: 18px;
       color: #3e3e3e;
       min-height: 24px;
-      margin-bottom: 12px;
+      margin: 12px 0 0 0;
       display: flex;
       align-items: center;
       justify-content: center;
@@ -129,20 +173,93 @@
         opacity: 1;
       }
     }
+
+    .chat-box {
+      display: flex;
+      flex-direction: column;
+      width: 320px;
+      height: 68vh;
+      max-height: 520px;
+      background: #fff;
+      border: 2px solid #b94b8b;
+      border-radius: 10px;
+      margin-left: 0;
+      box-shadow: 0 2px 8px #b94b8b22;
+      font-family: 'VT323', monospace;
+    }
+
+    #chatMessages {
+      flex: 1;
+      overflow-y: auto;
+      padding: 10px;
+      font-size: 16px;
+      color: #333;
+      word-break: break-word;
+    }
+
+    #chatForm {
+      display: flex;
+      border-top: 1px solid #eee;
+      padding: 6px;
+      background: #f9f9f9;
+    }
+
+    #chatInput {
+      flex: 1;
+      font-size: 16px;
+      font-family: 'VT323', monospace;
+      border: 1px solid #ccc;
+      border-radius: 6px;
+      padding: 6px 8px;
+      margin-right: 6px;
+      outline: none;
+    }
+
+    #chatForm button {
+      font-size: 16px;
+      padding: 6px 12px;
+      border-radius: 6px;
+      background: #ff69b4;
+      color: white;
+      border: none;
+      cursor: pointer;
+      font-family: 'VT323', monospace;
+    }
+
+    #chatForm button:disabled {
+      background: #ccc;
+      color: #888;
+      cursor: not-allowed;
+    }
   </style>
 </head>
 <body>
   <h1>Random Video Chat</h1>
 
   <div class="video-container">
-    <video id="localVideo" autoplay muted playsinline></video>
-    <video id="remoteVideo" autoplay playsinline></video>
+    <div class="main-row">
+      <div class="video-column">
+        <div class="video-box">
+          <video id="localVideo" autoplay muted playsinline></video>
+          <button id="flipBtn" title="Flip Camera">↔️</button>
+        </div>
+        <div class="video-box">
+          <video id="remoteVideo" autoplay playsinline></video>
+        </div>
+      </div>
+      <div class="chat-box">
+        <div id="chatMessages"></div>
+        <form id="chatForm" autocomplete="off">
+          <input id="chatInput" type="text" placeholder="Type a message..." maxlength="200" />
+          <button type="submit">Send</button>
+        </form>
+      </div>
+    </div>
+    <div id="status"></div>
   </div>
 
   <button id="connectBtn" disabled>Connect</button>
   <button id="disconnectBtn" disabled>Disconnect</button>
-
-  <div id="status"></div>
 
   <script src="/socket.io/socket.io.js"></script>
   <script>
@@ -151,6 +268,7 @@
     const remoteVideo = document.getElementById("remoteVideo");
     const connectBtn = document.getElementById("connectBtn");
     const disconnectBtn = document.getElementById("disconnectBtn");
+    const flipBtn = document.getElementById("flipBtn");
     const statusDiv = document.getElementById("status");
 
     let localStream;
@@ -161,19 +279,20 @@
       iceServers: [{ urls: "stun:stun.l.google.com:19302" }]
     };
 
-    // Get camera and mic first
-    navigator.mediaDevices.getUserMedia({ video: true, audio: true })
-      .then((stream) => {
-        localVideo.srcObject = stream;
-        localStream = stream;
-        connectBtn.disabled = false;
-        statusDiv.textContent = "";
-      })
-      .catch((err) => {
-        alert("Could not get media: " + err);
-      });
+    // Enable connect button on load
+    connectBtn.disabled = false;
 
-    connectBtn.onclick = () => {
+    connectBtn.onclick = async () => {
+      // Only get media on user gesture
+      if (!localStream) {
+        try {
+          localStream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
+          localVideo.srcObject = localStream;
+        } catch (err) {
+          alert("Could not get media: " + err);
+          return;
+        }
+      }
       statusDiv.textContent = "Connecting";
       statusDiv.classList.add("dots");
       socket.emit("find-peer");
@@ -285,6 +404,68 @@
         }
       };
     }
+
+    // --- Text Chat Functionality ---
+    const chatForm = document.getElementById("chatForm");
+    const chatInput = document.getElementById("chatInput");
+    const chatMessages = document.getElementById("chatMessages");
+
+    // Send chat message
+    chatForm.addEventListener("submit", function(e) {
+      e.preventDefault();
+      const msg = chatInput.value.trim();
+      if (msg && peerId) {
+        socket.emit("chat-message", { peerId, msg });
+        appendChatMessage("You", msg);
+        chatInput.value = "";
+      }
+    });
+
+    // Receive chat message
+    socket.on("chat-message", ({ from, msg }) => {
+      appendChatMessage("Stranger", msg);
+    });
+
+    function appendChatMessage(sender, msg) {
+      const div = document.createElement("div");
+      div.innerHTML = `<strong>${sender}:</strong> ${escapeHTML(msg)}`;
+      chatMessages.appendChild(div);
+      chatMessages.scrollTop = chatMessages.scrollHeight;
+    }
+
+    // Simple HTML escape
+    function escapeHTML(str) {
+      return str.replace(/[&<>"']/g, c => ({
+        '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
+      }[c]));
+    }
+
+    // Clear chat on disconnect
+    socket.on("peer-disconnected", () => {
+      chatMessages.innerHTML = "";
+    });
+    socket.on("no-peer-found", () => {
+      chatMessages.innerHTML = "";
+    });
+    disconnectBtn.onclick = () => {
+      chatMessages.innerHTML = "";
+      if (peerConnection) peerConnection.close();
+      peerConnection = null;
+      peerId = null;
+      remoteVideo.srcObject = null;
+      socket.emit("disconnect-peer");  // optional
+      connectBtn.disabled = false;
+      disconnectBtn.disabled = true;
+      statusDiv.textContent = "";
+      statusDiv.classList.remove("dots");
+    };
+
+    // Flip camera functionality
+    let flipped = false;
+    flipBtn.onclick = () => {
+      flipped = !flipped;
+      localVideo.style.transform = flipped ? "scaleX(-1)" : "";
+    };
   </script>
 </body>
 </html>
